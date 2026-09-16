@@ -1,0 +1,77 @@
+{
+  "schema_version": "1.0",
+  "contract_id": "things-align",
+  "revision": 1,
+  "is_example": false,
+  "status": "authorized-autonomous",
+  "supersedes": "things-appkit@2 的交互部分（不改其不变量）",
+  "evidence": [
+    "AX 菜单导出对比：/tmp/shishi-ux/menu-things3.txt 与 menu-shishi.txt",
+    "真实按键注入走查：/tmp/shishi-ux/shots/t1..t4",
+    "源码走查：task-list.swift 单选模型、app.swift 菜单构建"
+  ],
+  "assumptions": [
+    "A1 用户按 Things 3 键位形成肌肉记忆，键位以 Things 为准",
+    "A2 demo 数据结构可代表真实库"
+  ],
+  "tasks": [
+    {
+      "id": "TASK-A",
+      "goal": "一次选中多条待办并统一处理",
+      "precondition": "列表有多条开放待办，未处于内联编辑",
+      "entry": "列表任一行",
+      "success": "选中的每一条都发生相同变更并落盘；列表与侧栏计数同步更新"
+    },
+    {
+      "id": "TASK-B",
+      "goal": "不用鼠标完成安排、移动、标签、截止日期、完成、取消、复制",
+      "precondition": "列表有选中的开放待办",
+      "entry": "键盘",
+      "success": "按键后任务出现在目标分组/列表，或对应弹窗获得键盘焦点"
+    },
+    {
+      "id": "TASK-C",
+      "goal": "误操作后整体恢复，且输入文字时不被单键捷径干扰",
+      "precondition": "刚完成一次批量操作，或焦点在文本输入中",
+      "entry": "⌘Z / Escape / 文本框",
+      "success": "一次 ⌘Z 还原整批；Escape 退出选择；文本框内输入 t/e/o/r 落入文本而非触发捷径"
+    }
+  ],
+  "screens": ["list", "inline-card", "date-popover", "tags-popover", "move-menu"],
+  "states": ["no-selection", "single-selection", "multi-selection", "inline-editing", "text-editing", "popover-open"],
+  "transitions": [
+    {"id":"T1","from":"single-selection","trigger":"⇧↑↓ 或 ⌘点击","to":"multi-selection","feedback":"多行高亮，底部工具栏显示已选条数"},
+    {"id":"T2","from":"multi-selection","trigger":"T / E / O / R","to":"multi-selection","data":"全部选中项一次事务写入；失败保留原状态","feedback":"任务移动到目标分组"},
+    {"id":"T3","from":"multi-selection","trigger":"⌘S / ⇧⌘D / ⇧⌘T / ⇧⌘M","to":"popover-open","focus":"弹窗","failure":"no-selection 时菜单项禁用"},
+    {"id":"T4","from":"multi-selection","trigger":"⌘K / ⌥⌘K / ⌫ / ⌘D","to":"multi-selection","data":"批量完成/取消/移到废纸篓/复制，一次撤销事务"},
+    {"id":"T5","from":"multi-selection","trigger":"Escape","to":"no-selection","data":"仅清除选择，不修改数据"},
+    {"id":"T6","from":"any","trigger":"⌘Z","to":"前一状态","data":"整批变更一次还原"},
+    {"id":"T7","from":"text-editing","trigger":"t/e/o/r 字符","to":"text-editing","data":"字符进入文本，不触发捷径"},
+    {"id":"T8","from":"any","trigger":"⌘/","to":"same","feedback":"边栏显示或隐藏"}
+  ],
+  "invariants": [
+    "INV-1 禁止 SwiftUI，保持纯 AppKit",
+    "INV-2 一次批量操作 = 一次写盘 + 一次撤销事务",
+    "INV-3 单键捷径在内联编辑、文本输入、有 sheet、无选中、非主窗口时必须禁用",
+    "INV-4 批量操作跳过不可操作项（已完成、已删除、项目行），不得静默改写它们",
+    "INV-5 写盘失败时不改变内存状态与撤销栈，保留原选择",
+    "INV-6 不写入或读取用户真实库；验证只用隔离 QA 实例"
+  ],
+  "acceptance_scenarios": [
+    {"id":"SC-01","task":"TASK-A","transition":"T1,T2","assert":"⇧↓ 选中 3 条后按 E，三条全部进入今晚分组"},
+    {"id":"SC-02","task":"TASK-A","transition":"T3","assert":"多选后 ⇧⌘M 打开移动菜单，选项目后三条全部归入该项目"},
+    {"id":"SC-03","task":"TASK-A","transition":"T4","assert":"多选后 ⌫ 三条一起进废纸篓，废纸篓计数 +3"},
+    {"id":"SC-04","task":"TASK-B","transition":"T2","assert":"单选后依次 T/E/O/R，任务在今天→今晚→某天→随时之间移动"},
+    {"id":"SC-05","task":"TASK-B","transition":"T3","assert":"⇧⌘T 打开标签弹窗，输入并提交后标签出现在行尾"},
+    {"id":"SC-06","task":"TASK-C","transition":"T6","assert":"SC-03 后按一次 ⌘Z，三条全部回到原列表"},
+    {"id":"SC-07","task":"TASK-C","transition":"T7","assert":"在搜索框与内联卡片标题里输入 tour 等字符，字符完整落入文本且任务未被改期"},
+    {"id":"SC-08","task":"TASK-C","transition":"T5","assert":"Escape 清除多选，底部工具栏回到默认态"},
+    {"id":"SC-09","task":"TASK-B","transition":"T8","assert":"⌘/ 隐藏与恢复边栏"},
+    {"id":"SC-10","task":"TASK-A","transition":"T4","assert":"选中含已完成项时，批量完成只影响开放项，不改写已完成项"}
+  ],
+  "ui_freedom": ["工具栏图标与计数文案样式", "弹窗内部布局", "菜单项排列顺序中的分隔线"],
+  "open_questions": [
+    "Things 的「在区域中显示 ⌘L」与「归档 ⇧⌘Y」是否需要对齐——本轮未纳入范围",
+    "多选行的拖拽（一次拖多条到侧栏）本轮未纳入范围"
+  ]
+}

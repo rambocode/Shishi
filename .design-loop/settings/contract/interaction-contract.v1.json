@@ -1,0 +1,16 @@
+{
+  "schema_version":"1.0", "contract_id":"settings", "revision":1, "status":"authorized-autonomous",
+  "tasks":["本地偏好即时生效并保留","快速录入可保存及恢复草稿","系统集成先授权再读取"],
+  "screens":["general","cloud","quickEntry","reminders","calendars","data"],
+  "states":["idle","changed","draft","saved","denied","loading","error"],
+  "transitions":[
+    {"from":"idle","trigger":"更改本地偏好","to":"changed","data":"合法值持久化并通知运行界面"},
+    {"from":"draft","trigger":"添加","to":"saved","failure":"error","data":"成功才清空，失败保留"},
+    {"from":"draft","trigger":"取消","to":"idle","data":"隐藏但保留草稿"},
+    {"from":"idle","trigger":"用户点击授权","to":"loading","failure":"denied","data":"未经授权不读取系统内容"}
+  ],
+  "invariants":["纯AppKit","不改Things原库及设置","不自动批准系统权限","日历只读","提醒导入保留源且幂等","未接入服务明确说明"],
+  "acceptance_scenarios":["设置分类可达","外观字号即时变化","完成项归档时机及撤销","Dock计数去重","快速输入取消保存与持久化","未授权页不请求权限","fake集成拒绝/撤权/导入失败","备份入口保留"],
+  "assumptions":["ThingsCloud与自动更新需独立服务，不属于可复用本地能力"],
+  "open_questions":["真实系统权限与用户私人日历/提醒内容不由代理擅自授权测试"]
+}

@@ -1,0 +1,7 @@
+# 决定
+
+用户最新要求取代此前备注限高设计。用外层flipped文档承载现有header和真实NSTableView，不使用固定NSTableHeaderView或插入虚拟row，避免破坏任务索引、编辑与拖拽。
+
+项目备注expanded模式全文测量，无内部scrollbar；非项目描述仍保留bounded模式兼容。底部工具栏位于scroll之外。表格行高度变化同步文档高度；长卡片优先露出标题，再由活动编辑控件滚动定位。同页reload恢复offset但显式选择仍可reveal。
+
+单一主滚动布局复用于其他列表以避免路由切换重挂控件及焦点问题，业务排序和数据没有变化。

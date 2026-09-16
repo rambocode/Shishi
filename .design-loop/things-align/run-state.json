@@ -1,0 +1,14 @@
+{
+  "max_iterations": 4,
+  "iterations_used": 2,
+  "remaining_iterations": 2,
+  "contract": "things-align@1",
+  "structural_changes": 0,
+  "exit_status": "accepted",
+  "open_severities": {
+    "P0": 0,
+    "P1": 0,
+    "P2": 0,
+    "P3": 1
+  }
+}

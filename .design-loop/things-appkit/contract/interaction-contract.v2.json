@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "contract_id": "things-appkit",
+  "revision": 2,
+  "status": "authorized-autonomous",
+  "evidence": ["用户指定纯AppKit、多代理sol/medium", "用户要求交互体验对齐，允许导入Things3数据", "已观察Things 3.24原生项目、任务、菜单和布局"],
+  "assumptions": ["独立macOS本地应用，独立数据存储"],
+  "tasks": [
+    {"id":"edit", "goal":"在列表中快速录入、展开编辑并保存任务", "success":"列表更新、持久化，切换不会静默丢失有效输入"},
+    {"id":"organize", "goal":"通过日期和项目安排任务，完成后可恢复", "success":"列表正确归属、拖拽与快捷键可用、取消和撤销可靠"},
+    {"id":"import", "goal":"导入Things3数据继续工作", "success":"读取合法授权导出数据库，导入独立库，核对实体和关联，重复导入不重复创建"}
+  ],
+  "screens": ["list", "inline-editor", "details", "import-preview"],
+  "states": ["idle", "draft", "saving", "saved", "error", "import-preview", "imported"],
+  "transitions": [
+    {"from":"idle", "trigger":"CmdN or double click", "to":"draft", "focus":"标题输入"},
+    {"from":"draft", "trigger":"保存或切换任务", "to":"saved", "failure":"error", "data":"有效draft落盘成功后更新列表，否则保留输入"},
+    {"from":"draft", "trigger":"Escape", "to":"idle", "data":"显式取消草稿"},
+    {"from":"idle", "trigger":"导入Things数据库", "to":"import-preview", "failure":"error", "data":"源只读，结构校验，报告数量与不支持字段"},
+    {"from":"import-preview", "trigger":"确认导入", "to":"imported", "failure":"error", "data":"备份现有库，稳定ID合并，事务落盘"}
+  ],
+  "invariants": ["禁止SwiftUI", "不得写入或清理Things原始数据库", "未经授权不得绕过macOS访问控制", "数据转换不静默丢弃未知重复规则", "模板数据和真实数据隔离", "模拟/静态检查不冒充真实验收"],
+  "acceptance_scenarios": ["新增和行内编辑", "日期和今晚", "清单和标签", "完成-删除-恢复", "文本撤销", "项目完成恢复", "导入数量和关联", "重复导入幂等", "重启持久化", "最小窗口与暗色"],
+  "ui_freedom": ["独立应用名与图标", "自适应间距和原生控件细节"],
+  "open_questions": ["macOS限制直接读取Things数据库，需要走用户授权的正规导出/文件选择"]
+}

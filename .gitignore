@@ -1,0 +1,5 @@
+.build/
+.DS_Store
+.design-loop/**/baseline/
+.design-loop/**/rounds/
+build/
