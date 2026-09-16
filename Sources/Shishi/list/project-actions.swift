@@ -186,7 +186,7 @@ final class ProjectActionsController: NSObject {
                 lines += task.checklist.map { "  \($0.completed ? "☑" : "☐") \($0.title)" }
             }
         }
-        let headings = value.headings.filter { $0.deletedAt == nil }.sorted { $0.order < $1.order }
+        let headings = value.headings.filter(HeadingOperations.isVisible).sorted { $0.order < $1.order }
         let known = Set(headings.map(\.id))
         appendTasks(tasks.filter { task in task.headingID.map { !known.contains($0) } ?? true })
         for heading in headings {

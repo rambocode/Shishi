@@ -14,10 +14,8 @@ final class ProjectHeadingTests: XCTestCase {
                 for row in 0..<2 {
                     XCTAssertNil(list.task(at: row))
                     let section = try XCTUnwrap(list.tableView(table, viewFor: table.tableColumns[0], row: row) as? ListHeadingView)
-                    let add = try headingControl(NSButton.self, in: section, label: "在“同名标题”下新建待办")
-                    XCTAssertTrue(add.isEnabled)
-                    XCTAssertNotNil(add.action)
-                    XCTAssertNotNil(try headingControl(NSButton.self, in: section, label: "重命名标题“同名标题”").action)
+                    XCTAssertFalse(headingDescendants(section).contains { $0.accessibilityLabel() == "在“同名标题”下新建待办" }, "标题后不再显示＋")
+                    XCTAssertNotNil(try headingControl(NSButton.self, in: section, label: "标题“同名标题”更多操作").action)
                 }
                 let footer = try headingControl(NSButton.self, in: list.view, label: "在项目中新建标题分组")
                 XCTAssertFalse(footer.isHidden)

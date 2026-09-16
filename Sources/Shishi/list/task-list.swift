@@ -296,9 +296,10 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
             }
         }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window === self.view.window,
+            // 应用内菜单打开时键盘归菜单处理，列表快捷键（如空格新建）不响应。
+            guard let self, event.window === self.view.window, InAppMenu.current == nil,
                   event.window?.attachedSheet == nil, NSApp.modalWindow == nil else { return event }
-            if self.handleProjectSpace(event.keyCode, modifiers: event.modifierFlags,
+            if self.handleSpaceNewTask(event.keyCode, modifiers: event.modifierFlags,
                                        responder: event.window?.firstResponder, isRepeat: event.isARepeat) { return nil }
             let marked = (event.window?.firstResponder as? NSTextView)?.hasMarkedText() ?? false
             return self.handleInlineKey(event.keyCode, modifiers: event.modifierFlags, hasMarkedText: marked) ? nil : event
@@ -356,7 +357,7 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
                 return left == right ? $0.offset < $1.offset : left < right
             }.map(\.element)
         } else if case .project(let id) = route {
-            let headings = store.projects.first { $0.id == id }?.headings.sorted { $0.order < $1.order } ?? []
+            let headings = store.projects.first { $0.id == id }?.headings.filter(HeadingOperations.isVisible).sorted { $0.order < $1.order } ?? []
             items = source.filter { $0.headingID == nil } + headings.flatMap { heading in source.filter { $0.headingID == heading.id } }
                 + source.filter { task in task.headingID != nil && !headings.contains { $0.id == task.headingID } }
         } else if route == .logbook || route == .trash {
@@ -412,9 +413,12 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
         if case .project(let id) = route, let project = store.projects.first(where: { $0.id == id }) {
             // 标题以ID关联，而非以文字合并；空分组也保留可见的新建入口。
             rows = []; headingRows = [:]
-            let ungrouped = items.filter { $0.headingID == nil }
+            // 所属标题已存档或不存在的待办（如存档后生成的重复后继、从日志簿恢复的待办）归入无标题区，避免在项目里消失。
+            let sections = project.headings.filter(HeadingOperations.isVisible).sorted(by: { $0.order < $1.order })
+            let visible = Set(sections.map(\.id))
+            let ungrouped = items.filter { $0.headingID.map { !visible.contains($0) } ?? true }
             rows.append(contentsOf: ungrouped.map(Row.task))
-            for section in project.headings.filter({ $0.deletedAt == nil }).sorted(by: { $0.order < $1.order }) {
+            for section in sections {
                 headingRows[rows.count] = section.id; rows.append(.heading(section.title))
                 rows.append(contentsOf: items.filter { $0.headingID == section.id }.map(Row.task))
             }
@@ -509,22 +513,30 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
         if (code == 36 || code == 76), modifiers.contains(.command) { saveInlineEditing(); return true }
         return false
     }
-    /// 项目浏览状态的裸空格复用新建入口；不抢文本输入、按钮激活或组合快捷键。
+    /// 列表浏览状态的裸空格复用新建入口：选中标题则建在该标题下，未选择则不关联标题。
+    /// 不抢文本输入、按钮激活或组合快捷键；废纸篓、日志簿、搜索和已关闭项目不响应。
     @discardableResult
-    func handleProjectSpace(_ code: UInt16, modifiers: NSEvent.ModifierFlags,
+    func handleSpaceNewTask(_ code: UInt16, modifiers: NSEvent.ModifierFlags,
                             responder: NSResponder?, isRepeat: Bool = false) -> Bool {
         guard code == 49, !isRepeat,
               modifiers.intersection([.command, .control, .option, .shift]).isEmpty,
-              inlineEditor == nil, case .project(let id) = route,
-              let project = store.projects.first(where: { $0.id == id }),
-              project.deletedAt == nil, !project.completed,
-              project.status == nil || project.status == .open,
+              inlineEditor == nil, acceptsSpaceNewTask,
               let create = onNewTask else { return false }
         if let text = responder as? NSTextView, text.isEditable || text.hasMarkedText() { return false }
         if let text = responder as? NSText, text.isEditable { return false }
         if let control = responder as? NSControl, !(control is NSTableView) { return false }
         create()
         return true
+    }
+    /// 当前路由能否用空格新建：只读列表与搜索结果没有明确的新建归属，项目需仍处于开放状态。
+    private var acceptsSpaceNewTask: Bool {
+        switch route {
+        case .trash, .logbook, .search: return false
+        case .project(let id):
+            guard let project = store.projects.first(where: { $0.id == id }) else { return false }
+            return project.deletedAt == nil && !project.completed && (project.status == nil || project.status == .open)
+        default: return true
+        }
     }
 
     func resizeInlineEditor() {
@@ -665,7 +677,7 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
             return ProjectHistoryRowView(count: count, expanded: isProjectHistoryExpanded, textSize: store.preferences.textSize) { [weak self] in self?.toggleProjectHistory() }
         case .heading(let text):
             if let id = headingRows[row] {
-                let view = ListHeadingView(text, textSize: store.preferences.textSize, onAdd: { [weak self] in self?.newTask(inHeading: id) }, onRename: { [weak self] sender in self?.showHeadingEditor(id, from: sender) },
+                let view = ListHeadingView(text, textSize: store.preferences.textSize, onMore: { [weak self] sender in self?.showHeadingMenu(id, from: sender) },
                                            onTitleSave: { [weak self] title in
                     guard let self, case .project(let projectID) = self.route else { return false }
                     return self.store.renameHeading(id, title: title, in: projectID)
@@ -737,7 +749,7 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
     func newTask(inHeading headingID: UUID) {
         guard case .project(let projectID) = route,
               let project = store.projects.first(where: { $0.id == projectID }),
-              project.headings.contains(where: { $0.id == headingID && $0.deletedAt == nil }) else { return }
+              project.headings.contains(where: { $0.id == headingID && HeadingOperations.isVisible($0) }) else { return }
         let todo = Todo(title: "", schedule: .anytime, projectID: projectID, areaID: project.areaID, headingID: headingID)
         beginEditing(todo, isNew: true)
     }

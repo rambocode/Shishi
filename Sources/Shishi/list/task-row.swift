@@ -156,25 +156,18 @@ final class TaskListRowView: NSTableRowView {
 }
 
 final class ListHeadingView: NSView {
-    /// 所在行被选中：隐藏底部分隔线与“＋”，只保留“…”，与浅蓝选中底一致。
-    var isRowSelected = false {
-        didSet {
-            guard isRowSelected != oldValue else { return }
-            addButton?.isHidden = isRowSelected
-            needsDisplay = true
-        }
-    }
+    /// 所在行被选中：隐藏底部分隔线，与浅蓝选中底一致。
+    var isRowSelected = false { didSet { if isRowSelected != oldValue { needsDisplay = true } } }
     /// 紧挨着的下一行是被选中的标题分组：本行底部分隔线正好在浅蓝底上方，需要隐藏。
     var isNextRowSelected = false { didSet { if isNextRowSelected != oldValue { needsDisplay = true } } }
-    private weak var addButton: NSButton?
     /// 项目内的标题分组可双击原地改名；其它分组标题（今天、日期等）只读。
     let titleField: InlineTitleField
     private var label: InlineTitleField { titleField }
-    private let onAdd: (() -> Void)?
-    private let onRename: ((NSView) -> Void)?
-    init(_ title: String, textSize: Int = 14, onAdd: (() -> Void)? = nil, onRename: ((NSView) -> Void)? = nil,
+    /// 「…」按钮：弹出标题操作菜单（存档、移动、转换为项目、删除），参数为菜单锚点。
+    private let onMore: ((NSView) -> Void)?
+    init(_ title: String, textSize: Int = 14, onMore: ((NSView) -> Void)? = nil,
          onTitleSave: ((String) -> Bool)? = nil) {
-        self.onAdd = onAdd; self.onRename = onRename
+        self.onMore = onMore
         titleField = InlineTitleField(title: title)
         titleField.onSave = onTitleSave
         titleField.isRenameEnabled = onTitleSave != nil
@@ -185,32 +178,28 @@ final class ListHeadingView: NSView {
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
         var titleEnd = trailingAnchor
-        if onAdd != nil {
-            let add = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "新建待办")!, target: self, action: #selector(addTask))
-            let more = NSButton(image: NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "编辑标题")!, target: self, action: #selector(rename(_:)))
-            add.isBordered = false; more.isBordered = false
-            add.contentTintColor = Appearance.blue; more.contentTintColor = Appearance.blue
-            add.setAccessibilityLabel("在“\(title)”下新建待办"); more.setAccessibilityLabel("重命名标题“\(title)”")
-            add.toolTip = "在这个标题下新建待办"; more.toolTip = "重命名标题"
-            for button in [add, more] { addSubview(button); button.translatesAutoresizingMaskIntoConstraints = false }
+        // 项目标题分组只保留「…」；新建待办用空格或底部「新建任务」按钮。
+        if onMore != nil {
+            let more = NSButton(image: NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "标题操作")!, target: self, action: #selector(showMore(_:)))
+            more.isBordered = false
+            more.contentTintColor = Appearance.blue
+            more.setAccessibilityLabel("标题“\(title)”更多操作")
+            more.toolTip = "更多操作"
+            addSubview(more); more.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([
                 more.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8), more.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
-                more.widthAnchor.constraint(equalToConstant: 24), more.heightAnchor.constraint(equalToConstant: 26),
-                add.trailingAnchor.constraint(equalTo: more.leadingAnchor, constant: -4), add.centerYAnchor.constraint(equalTo: more.centerYAnchor),
-                add.widthAnchor.constraint(equalToConstant: 24), add.heightAnchor.constraint(equalToConstant: 26)
+                more.widthAnchor.constraint(equalToConstant: 24), more.heightAnchor.constraint(equalToConstant: 26)
             ])
-            titleEnd = add.leadingAnchor
-            addButton = add
+            titleEnd = more.leadingAnchor
         }
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             label.trailingAnchor.constraint(lessThanOrEqualTo: titleEnd, constant: -8),
             label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -7)
         ])
-        if onAdd == nil { setAccessibilityElement(true); setAccessibilityLabel(title); setAccessibilityRole(.staticText) }
+        if onMore == nil { setAccessibilityElement(true); setAccessibilityLabel(title); setAccessibilityRole(.staticText) }
     }
-    @objc private func addTask() { onAdd?() }
-    @objc private func rename(_ sender: NSButton) { onRename?(sender) }
+    @objc private func showMore(_ sender: NSButton) { onMore?(sender) }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance(); needsDisplay = true

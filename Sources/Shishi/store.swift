@@ -165,6 +165,15 @@ import ShishiCore
         } catch { errorMessage = error.localizedDescription; return nil }
     }
 
+    /// 标题分组操作的统一入口：在快照副本上执行，成功后一次写盘、一次撤销；失败返回 nil 并设置 errorMessage。
+    @discardableResult func applyHeadingOperation<T>(_ operation: (inout Snapshot) throws -> T) -> T? {
+        var value = snapshot
+        do {
+            let result = try operation(&value)
+            return commit(value) ? result : nil
+        } catch { errorMessage = error.localizedDescription; return nil }
+    }
+
     @discardableResult func saveProject(_ project: Project) -> Bool {
         var value = snapshot
         do {

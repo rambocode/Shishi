@@ -97,7 +97,7 @@ final class InlineTitleTests: XCTestCase {
         }
     }
 
-    /// 选中标题分组：浅蓝底由行视图绘制，标题视图收起“＋”，与参考图一致。
+    /// 选中标题分组：浅蓝底由行视图绘制，标题视图不显示“＋”，与参考图一致。
     func testSelectedHeadingRowUsesLightBlueStyle() async throws {
         try await MainActor.run {
             try projectFixture { list, _, _ in
@@ -108,8 +108,7 @@ final class InlineTitleTests: XCTestCase {
                 let heading = try XCTUnwrap(table.view(atColumn: 0, row: row, makeIfNecessary: true) as? ListHeadingView)
                 XCTAssertTrue(rowView.isHeadingRow)
                 XCTAssertTrue(heading.isRowSelected)
-                let add = descendants(heading).compactMap { $0 as? NSButton }.first { $0.toolTip == "在这个标题下新建待办" }
-                XCTAssertEqual(add?.isHidden, true)
+                XCTAssertNil(descendants(heading).compactMap { $0 as? NSButton }.first { $0.toolTip == "在这个标题下新建待办" })
                 // 上一行标题的底部分隔线紧贴选中底，也要隐藏。
                 let aboveRow = try XCTUnwrap((0..<row).last { table.view(atColumn: 0, row: $0, makeIfNecessary: true) is ListHeadingView })
                 if aboveRow == row - 1 {
@@ -120,7 +119,6 @@ final class InlineTitleTests: XCTestCase {
                 }
                 table.deselectAll(nil)
                 XCTAssertFalse(heading.isRowSelected)
-                XCTAssertEqual(add?.isHidden, false)
             }
         }
     }
