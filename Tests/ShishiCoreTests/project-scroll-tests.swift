@@ -40,6 +40,35 @@ final class ProjectScrollTests: XCTestCase {
         try body(list, store, project, window)
     }
 
+    func testShortProjectHeaderAndNotesRemainVisible() async throws {
+        try await MainActor.run {
+            try fixture { list, store, project, _ in
+                var updated = project
+                updated.notes = "项目备注\n第二行说明"
+                XCTAssertTrue(store.saveProject(updated))
+                settle(list.view)
+                let title = try XCTUnwrap(descendants(list.view).compactMap { $0 as? NSTextField }.first { $0.stringValue == project.title })
+                let notes = try XCTUnwrap(descendants(list.view).compactMap { $0 as? BoundedNotesView }.first)
+                let scroll = try XCTUnwrap(list.table.enclosingScrollView)
+                let titleRect = title.convert(title.bounds, to: scroll.contentView)
+                let notesRect = notes.convert(notes.bounds, to: scroll.contentView)
+                XCTAssertGreaterThan(titleRect.height, 20)
+                XCTAssertTrue(scroll.contentView.bounds.contains(titleRect), "标题必须在可见区域：\(titleRect)")
+                XCTAssertTrue(scroll.contentView.bounds.contains(notesRect), "备注必须在可见区域：\(notesRect)")
+                XCTAssertFalse(title.isHiddenOrHasHiddenAncestor)
+                XCTAssertFalse(notes.isHiddenOrHasHiddenAncestor)
+                let headerRect = title.convert(title.bounds, to: list.view)
+                let before = try XCTUnwrap(list.view.bitmapImageRepForCachingDisplay(in: headerRect))
+                list.view.cacheDisplay(in: headerRect, to: before)
+                list.table.isHidden = true
+                defer { list.table.isHidden = false }
+                let after = try XCTUnwrap(list.view.bitmapImageRepForCachingDisplay(in: headerRect))
+                list.view.cacheDisplay(in: headerRect, to: after)
+                XCTAssertEqual(before.representation(using: .png, properties: [:]), after.representation(using: .png, properties: [:]), "表格绘制不能覆盖项目标题")
+            }
+        }
+    }
+
     func testLongProjectIsOneScrollDocumentAndWindowStaysFixed() async throws {
         try await MainActor.run {
             try fixture { list, _, project, window in

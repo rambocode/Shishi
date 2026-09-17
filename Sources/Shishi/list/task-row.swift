@@ -64,6 +64,22 @@ final class TaskRowView: NSTableCellView {
 }
 
 final class ListTableView: NSTableView {
+    var headingDropBoundary: Int? {
+        didSet { if oldValue != headingDropBoundary { needsDisplay = true } }
+    }
+    override func drawBackground(inClipRect clipRect: NSRect) {
+        super.drawBackground(inClipRect: clipRect)
+        drawHeadingDropGap(in: clipRect)
+    }
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        headingDropBoundary = nil
+        super.draggingExited(sender)
+    }
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        headingDropBoundary = nil
+        super.draggingEnded(sender)
+    }
+
     /// 宿主在 reload/行高变更后同步全文高度；不创建额外 row，也不重建编辑控件。
     var onContentHeightChanged: (() -> Void)?
     override func reloadData() {
@@ -155,7 +171,24 @@ final class TaskListRowView: NSTableRowView {
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
 }
 
-final class ListHeadingView: NSView {
+final class ListHeadingView: NSTableCellView {
+    private var cachedDragPreview: (title: String, size: NSSize, image: NSImage)?
+    override var draggingImageComponents: [NSDraggingImageComponent] {
+        guard onMore != nil else { return super.draggingImageComponents }
+        let image: NSImage
+        if let cached = cachedDragPreview, cached.title == titleField.stringValue, cached.size == bounds.size {
+            image = cached.image
+        } else {
+            image = HeadingDragPreview.image(title: titleField.stringValue, size: bounds.size,
+                                             textSize: Int(titleField.font?.pointSize ?? 14))
+            cachedDragPreview = (titleField.stringValue, bounds.size, image)
+        }
+        let component = NSDraggingImageComponent(key: .icon)
+        component.contents = image
+        component.frame = bounds.insetBy(dx: -HeadingDragPreview.margin, dy: -HeadingDragPreview.margin)
+        return [component]
+    }
+
     /// 所在行被选中：隐藏底部分隔线，与浅蓝选中底一致。
     var isRowSelected = false { didSet { if isRowSelected != oldValue { needsDisplay = true } } }
     /// 紧挨着的下一行是被选中的标题分组：本行底部分隔线正好在浅蓝底上方，需要隐藏。
@@ -171,6 +204,7 @@ final class ListHeadingView: NSView {
         titleField = InlineTitleField(title: title)
         titleField.onSave = onTitleSave
         titleField.isRenameEnabled = onTitleSave != nil
+        titleField.forwardsSelectionToTable = onTitleSave != nil
         titleField.setAccessibilityLabel("标题分组名称")
         super.init(frame: .zero)
         label.font = .systemFont(ofSize: CGFloat(textSize), weight: .semibold)
@@ -226,8 +260,9 @@ private final class TaskCheckButton: NSButton {
             NSColor.white.setStroke()
             let tick = NSBezierPath()
             tick.move(to: NSPoint(x: rect.minX + 3, y: rect.midY))
-            tick.line(to: NSPoint(x: rect.minX + 6, y: rect.minY + 4))
-            tick.line(to: NSPoint(x: rect.maxX - 3, y: rect.maxY - 4))
+            // NSButton 使用翻转坐标时 y 向下增长，勾号低点和右上端需要同步翻转。
+            tick.line(to: NSPoint(x: rect.minX + 6, y: isFlipped ? rect.maxY - 4 : rect.minY + 4))
+            tick.line(to: NSPoint(x: rect.maxX - 3, y: isFlipped ? rect.minY + 4 : rect.maxY - 4))
             tick.lineWidth = 1.4; tick.lineCapStyle = .round; tick.lineJoinStyle = .round; tick.stroke()
         } else {
             NSColor.labelColor.withAlphaComponent(isEnabled ? 0.32 : 0.16).setStroke()

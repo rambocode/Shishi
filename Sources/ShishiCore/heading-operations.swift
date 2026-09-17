@@ -8,6 +8,25 @@ public enum HeadingOperations {
         heading.deletedAt == nil && (heading.status == nil || heading.status == .open)
     }
 
+    /// 调整可见标题的完整顺序；保留待办归属和隐藏标题，非法 ID 或遗漏均不修改快照。
+    public static func reorder(_ ids: [UUID], in projectID: UUID, snapshot: inout Snapshot) throws {
+        guard let index = snapshot.projects.firstIndex(where: { $0.id == projectID }), isOpen(snapshot.projects[index]) else {
+            throw DataError.invalid("项目不存在或已关闭。")
+        }
+        let visible = snapshot.projects[index].headings.filter(isVisible).map(\.id)
+        guard ids.count == visible.count, Set(ids).count == ids.count, Set(ids) == Set(visible) else {
+            throw DataError.invalid("标题排序必须包含全部可见标题且不得重复。")
+        }
+        var candidate = snapshot
+        for (order, id) in ids.enumerated() {
+            if let headingIndex = candidate.projects[index].headings.firstIndex(where: { $0.id == id }) {
+                candidate.projects[index].headings[headingIndex].order = Double(order)
+            }
+        }
+        try Domain.validate(candidate)
+        snapshot = candidate
+    }
+
     /// 存档：完成标题下全部开放待办，并把标题标为已完成，从项目列表中隐藏。
     /// 重复待办走 Domain.complete，照常生成后继；后继所属标题已隐藏时由列表归入无标题区。
     public static func archive(_ headingID: UUID, in projectID: UUID, snapshot: inout Snapshot, now: Date = Date()) throws {

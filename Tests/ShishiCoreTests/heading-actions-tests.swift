@@ -28,6 +28,58 @@ final class HeadingActionsTests: XCTestCase {
         try body(store, list, source, target, [open, done, other])
     }
 
+    func testDragHeadingReordersGroupAndSupportsUndo() async throws {
+        try await MainActor.run {
+            try fixture { store, list, source, _, todos in
+                // 预先创建行控件，排序后必须跟随身份移动而不是重建或错配。
+                let originalFirst = try XCTUnwrap(list.table.view(atColumn: 0, row: 0, makeIfNecessary: true))
+                let originalSecond = try XCTUnwrap(list.table.view(atColumn: 0, row: 2, makeIfNecessary: true))
+                list.table.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
+                XCTAssertTrue(list.acceptDraggedHeading(source.headings[1].id, at: 0))
+                XCTAssertTrue(list.table.view(atColumn: 0, row: 0, makeIfNecessary: true) === originalSecond)
+                XCTAssertTrue(list.table.view(atColumn: 0, row: 2, makeIfNecessary: true) === originalFirst)
+                XCTAssertEqual(list.contextHeadingID, source.headings[1].id)
+                let headings = try XCTUnwrap(store.projects.first { $0.id == source.id }).headings.sorted { $0.order < $1.order }
+                XCTAssertEqual(headings.map(\.id), [source.headings[1].id, source.headings[0].id])
+                XCTAssertEqual(store.todo(todos[0].id)?.headingID, source.headings[0].id)
+                store.undo()
+                XCTAssertEqual(store.projects.first { $0.id == source.id }?.headings.sorted { $0.order < $1.order }.map(\.id), source.headings.map(\.id))
+                XCTAssertFalse(list.acceptDraggedHeading(UUID(), at: 0))
+                XCTAssertFalse(list.acceptDraggedHeading(source.headings[0].id, at: -1))
+            }
+        }
+    }
+
+    @MainActor func testGapCleanupRestoresHiddenRowsAndDragPreviewIsCached() async throws {
+        var list: TaskListController?
+        try fixture { _, controller, _, _, _ in
+            list = controller
+            let heading = try XCTUnwrap(controller.table.view(atColumn: 0, row: 0, makeIfNecessary: true) as? ListHeadingView)
+            let firstImage = heading.draggingImageComponents.first?.contents as? NSImage
+            let secondImage = heading.draggingImageComponents.first?.contents as? NSImage
+            XCTAssertNotNil(firstImage)
+            XCTAssertTrue(firstImage === secondImage, "拖动图像应复用缓存")
+            controller.table.draggingDestinationFeedbackStyle = .gap
+            controller.table.headingDropBoundary = 0
+            controller.table.hideRows(at: IndexSet(integer: 0), withAnimation: [])
+            controller.finishHeadingDrag()
+            XCTAssertNil(controller.table.headingDropBoundary)
+            XCTAssertEqual(controller.table.draggingDestinationFeedbackStyle, .regular)
+        }
+        // 与真实结束回调一样，等待下一轮主队列再清理原生临时行几何。
+        await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
+        XCTAssertTrue(try XCTUnwrap(list).table.hiddenRowIndexes.isEmpty)
+    }
+
+    func testInvalidHeadingOrderDoesNotChangeSnapshot() throws {
+        let first = Heading(title: "第一", order: 0), second = Heading(title: "第二", order: 1)
+        let project = Project(title: "项目", headings: [first, second])
+        var snapshot = Snapshot(projects: [project])
+        XCTAssertThrowsError(try HeadingOperations.reorder([first.id, first.id], in: project.id, snapshot: &snapshot))
+        XCTAssertThrowsError(try HeadingOperations.reorder([first.id], in: project.id, snapshot: &snapshot))
+        XCTAssertEqual(snapshot.projects[0].headings.map(\.order), [0, 1])
+    }
+
     func testMenuMatchesDesign() async throws {
         try await MainActor.run {
             try fixture { _, list, source, _, _ in

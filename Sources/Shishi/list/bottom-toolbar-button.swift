@@ -4,16 +4,26 @@ import AppKit
 final class BottomToolbarButton: NSButton {
     static func headingImage() -> NSImage {
         let image = NSImage(size: NSSize(width: 24, height: 24), flipped: false) { _ in
-            NSColor.labelColor.setStroke()
+            NSColor.black.setStroke()
             let outline = NSBezierPath()
-            outline.move(to: NSPoint(x: 5, y: 3)); outline.line(to: NSPoint(x: 16, y: 3))
-            outline.line(to: NSPoint(x: 22, y: 12)); outline.line(to: NSPoint(x: 16, y: 21))
-            outline.line(to: NSPoint(x: 5, y: 21)); outline.close()
-            outline.lineWidth = 1.7; outline.lineJoinStyle = .round; outline.stroke()
+            // 横向圆角标签：右端为短尖角，整体比例与旁边的系统图标保持一致。
+            outline.move(to: NSPoint(x: 6, y: 19.5))
+            outline.line(to: NSPoint(x: 14.5, y: 19.5))
+            outline.curve(to: NSPoint(x: 17.1, y: 18.3), controlPoint1: NSPoint(x: 15.7, y: 19.5), controlPoint2: NSPoint(x: 16.4, y: 19.1))
+            outline.line(to: NSPoint(x: 21.2, y: 13.6))
+            outline.curve(to: NSPoint(x: 21.2, y: 10.4), controlPoint1: NSPoint(x: 22.1, y: 12.6), controlPoint2: NSPoint(x: 22.1, y: 11.4))
+            outline.line(to: NSPoint(x: 17.1, y: 5.7))
+            outline.curve(to: NSPoint(x: 14.5, y: 4.5), controlPoint1: NSPoint(x: 16.4, y: 4.9), controlPoint2: NSPoint(x: 15.7, y: 4.5))
+            outline.line(to: NSPoint(x: 6, y: 4.5))
+            outline.curve(to: NSPoint(x: 2.5, y: 8), controlPoint1: NSPoint(x: 3.8, y: 4.5), controlPoint2: NSPoint(x: 2.5, y: 5.8))
+            outline.line(to: NSPoint(x: 2.5, y: 16))
+            outline.curve(to: NSPoint(x: 6, y: 19.5), controlPoint1: NSPoint(x: 2.5, y: 18.2), controlPoint2: NSPoint(x: 3.8, y: 19.5))
+            outline.close()
+            outline.lineWidth = 1.45; outline.lineJoinStyle = .round; outline.stroke()
             let plus = NSBezierPath()
-            plus.move(to: NSPoint(x: 7, y: 12)); plus.line(to: NSPoint(x: 15, y: 12))
-            plus.move(to: NSPoint(x: 11, y: 8)); plus.line(to: NSPoint(x: 11, y: 16))
-            plus.lineWidth = 1.7; plus.lineCapStyle = .round; plus.stroke()
+            plus.move(to: NSPoint(x: 6.7, y: 12)); plus.line(to: NSPoint(x: 13.3, y: 12))
+            plus.move(to: NSPoint(x: 10, y: 8.7)); plus.line(to: NSPoint(x: 10, y: 15.3))
+            plus.lineWidth = 1.8; plus.lineCapStyle = .round; plus.stroke()
             return true
         }
         image.isTemplate = true; image.accessibilityDescription = "新建标题"
@@ -72,9 +82,9 @@ final class BottomToolbarButton: NSButton {
     }
     override func draw(_ dirtyRect: NSRect) {
         if isEnabled && (hovered || isHighlighted || state == .on) {
-            let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 0, dy: 2), xRadius: (bounds.height - 4) / 2, yRadius: (bounds.height - 4) / 2)
+            let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 2), xRadius: (bounds.height - 4) / 2, yRadius: (bounds.height - 4) / 2)
             NSColor.textBackgroundColor.setFill(); shape.fill()
-            NSColor.separatorColor.withAlphaComponent(0.45).setStroke(); shape.lineWidth = 1; shape.stroke()
+            NSColor.secondaryLabelColor.withAlphaComponent(0.8).setStroke(); shape.lineWidth = 1; shape.stroke()
         }
         super.draw(dirtyRect)
     }

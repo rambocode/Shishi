@@ -10,6 +10,7 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
         set {
             guard newValue != currentRoute else { return }
             guard finishInlineEditing() else { onRouteChangeBlocked?(currentRoute); return }
+            clearCompletionFeedback()
             currentRoute = newValue; isProjectHistoryExpanded = false; reload()
             view.layoutSubtreeIfNeeded()
             contentScroll.contentView.scroll(to: .zero)
@@ -50,6 +51,7 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
     private(set) var isProjectHistoryExpanded = false
     private var rows: [Row] = []
     private var headingRows: [Int: UUID] = [:]
+    private var animatesHeadingReorder = false
     private var headingPopover: NSPopover?
     /// 重复面板需要强引用，否则弹出后可能随局部变量一起释放。
     var repeatPopover: NSPopover?
@@ -81,6 +83,7 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
     let contextualMore = NSButton()
     private var observer: NSObjectProtocol?
     private var preferencesObserver: NSObjectProtocol?
+    private let headingDragType = NSPasteboard.PasteboardType("app.local.shishi.heading")
     private let dragType = NSPasteboard.PasteboardType("app.local.shishi.task")
     private var contentWidth: NSLayoutConstraint?
     private var subtitleLeading: NSLayoutConstraint?
@@ -90,6 +93,9 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
     /// 正在原地改名的标题（项目标题或标题分组）；分组在表格行里，编辑期间刷新会重建行，需要延后。
     var editingTitleField: InlineTitleField?
     var titleReloadPending = false
+    /// 已保存完成、但暂时留在原行提供勾选反馈的任务；不参与持久化。
+    var completionFeedback: [UUID: DispatchWorkItem] = [:]
+    var animatesCompletionRemoval = false
 
     init(store: TaskStore, calendarService: SystemIntegrations? = nil) {
         self.store = store
@@ -102,6 +108,7 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
         if let preferencesObserver { NotificationCenter.default.removeObserver(preferencesObserver) }
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         if let outsideClickMonitor { NSEvent.removeMonitor(outsideClickMonitor) }
+        for work in completionFeedback.values { work.cancel() }
     }
 
     override func loadView() {
@@ -122,6 +129,8 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
         table.intercellSpacing = .zero
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.backgroundColor = .textBackgroundColor
+        // 表格与项目标题共用外层滚动文档；限制背景绘制范围，避免覆盖上方标题和备注。
+        if #available(macOS 14.0, *) { table.clipsToBounds = true }
         table.selectionHighlightStyle = .regular
         table.allowsMultipleSelection = true
         table.style = .plain
@@ -130,7 +139,7 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
         table.target = self
         table.action = #selector(clicked)
         table.doubleAction = #selector(edit)
-        table.registerForDraggedTypes([dragType])
+        table.registerForDraggedTypes([dragType, headingDragType])
         table.setDraggingSourceOperationMask(.move, forLocal: true)
         table.editSelection = { [weak self] in self?.edit() }
         table.deleteSelection = { [weak self] in self?.deleteSelected() }
@@ -205,6 +214,7 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
         searchButton.target = self; searchButton.action = #selector(searchAction)
         addHeadingButton.hintTitle = "新建标题"; addHeadingButton.hintShortcut = "⇧⌘N"
         addHeadingButton.image = BottomToolbarButton.headingImage()
+        addHeadingButton.contentTintColor = .labelColor.withAlphaComponent(0.6)
         addHeadingButton.hintDetail = "将您的项目分为不同类别或阶段"; addHeadingButton.toolTip = nil
         tools.orientation = .horizontal; tools.distribution = .fillEqually; tools.spacing = 8
         tools.detachesHiddenViews = true
@@ -338,7 +348,19 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
         guard isViewLoaded, !savingInline else { return }
         // 表格里的标题分组正在输入时重建行会丢掉输入框，等编辑结束再刷新。
         if let field = editingTitleField, field !== heading { titleReloadPending = true; return }
+        let oldRowIDs = projectRowIDs
+        let animateReorder = animatesHeadingReorder
+        let animateCompletion = animatesCompletionRemoval
+        animatesCompletionRemoval = false
+        animatesHeadingReorder = false
+        let selectedHeading = headingRows[table.selectedRow]
         let scrollOrigin = contentScroll.contentView.bounds.origin
+        let completionRows: [(index: Int, task: Todo)] = rows.enumerated().compactMap { index, row in
+            guard case .task(let old) = row, completionFeedback[old.id] != nil,
+                  let task = store.todo(old.id), task.status == .completed,
+                  Domain.deletionDate(task, in: store.snapshot) == nil else { return nil }
+            return (index, task)
+        }
         subtitle.font = .systemFont(ofSize: CGFloat(store.preferences.textSize))
         let editingDraft = inlineEditor?.collect()
         let activeControl = inlineEditor?.activeControl()
@@ -358,8 +380,10 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
             }.map(\.element)
         } else if case .project(let id) = route {
             let headings = store.projects.first { $0.id == id }?.headings.filter(HeadingOperations.isVisible).sorted { $0.order < $1.order } ?? []
-            items = source.filter { $0.headingID == nil } + headings.flatMap { heading in source.filter { $0.headingID == heading.id } }
-                + source.filter { task in task.headingID != nil && !headings.contains { $0.id == task.headingID } }
+            let grouped = Dictionary(grouping: source, by: \.headingID)
+            let visibleIDs = Set(headings.map(\.id))
+            items = (grouped[nil] ?? []) + headings.flatMap { grouped[$0.id] ?? [] }
+                + source.filter { task in task.headingID.map { !visibleIDs.contains($0) } ?? false }
         } else if route == .logbook || route == .trash {
             items = source
         } else {
@@ -418,15 +442,18 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
             let visible = Set(sections.map(\.id))
             let ungrouped = items.filter { $0.headingID.map { !visible.contains($0) } ?? true }
             rows.append(contentsOf: ungrouped.map(Row.task))
+            let grouped = Dictionary(grouping: items, by: \.headingID)
             for section in sections {
                 headingRows[rows.count] = section.id; rows.append(.heading(section.title))
-                rows.append(contentsOf: items.filter { $0.headingID == section.id }.map(Row.task))
+                rows.append(contentsOf: (grouped[section.id] ?? []).map(Row.task))
             }
         }
         var recorded: [Todo] = []
+        let retainedCompletions = completionRows.filter { completed in !items.contains { $0.id == completed.task.id } }
+        let retainedIDs = Set(retainedCompletions.map { $0.task.id })
         if case .project(let id) = route, let project = store.projects.first(where: { $0.id == id }) {
             let summary = ProjectSummary(project: project, tasks: store.todos)
-            recorded = summary.recordedItems.filter { $0.pendingArchiveDate == nil }
+            recorded = summary.recordedItems.filter { $0.pendingArchiveDate == nil && !retainedIDs.contains($0.id) }
             projectProgress.configure(project: project, summary: summary)
             if !recorded.isEmpty {
                 rows.append(.historyToggle(recorded.count))
@@ -437,6 +464,12 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
         } else {
             icon.isHidden = false; projectProgress.isHidden = true; projectMore.isHidden = true
             subtitleLeading?.constant = 48
+        }
+        // 保持原行位置，防止下一项立即顶上来；插入时同步标题行索引。
+        for completed in retainedCompletions {
+            let index = min(completed.index, rows.count)
+            headingRows = Dictionary(uniqueKeysWithValues: headingRows.map { ($0.key >= index ? $0.key + 1 : $0.key, $0.value) })
+            rows.insert(.task(completed.task), at: index)
         }
         let info = headerInfo
         if case .project(let id) = route {
@@ -458,10 +491,18 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
         if !subtitle.isEditingNotes { subtitle.stringValue = info.2 }
         calendarAgenda.update(route: route)
         empty.stringValue = route == .trash ? "废纸篓为空\n删除的任务会显示在这里" : "暂无任务\n留一点空间，开始新的计划"
-        empty.isHidden = !items.isEmpty || !projects.isEmpty || inlineEditor != nil || !headingRows.isEmpty || !recorded.isEmpty
+        empty.isHidden = !items.isEmpty || !projects.isEmpty || inlineEditor != nil || !headingRows.isEmpty || !recorded.isEmpty || !retainedCompletions.isEmpty
         count.stringValue = "\(items.count) 个任务" + (projects.isEmpty ? "" : " · \(projects.count) 个项目")
         primary.setAccessibilityLabel(route == .trash || route == .logbook ? "恢复" : "新建待办")
-        table.reloadData()
+        if animateCompletion, table.animateCompletionRemoval(from: oldRowIDs, to: projectRowIDs) {
+            // 历史录入项的行身份不变，但数量会随完成更新。
+            if let index = rows.firstIndex(where: { if case .historyToggle = $0 { return true }; return false }) {
+                table.reloadData(forRowIndexes: IndexSet(integer: index), columnIndexes: IndexSet(integer: 0))
+            }
+        } else if !animateReorder || !table.animateReorder(from: oldRowIDs, to: projectRowIDs) { table.reloadData() }
+        if let selectedHeading, let index = headingRows.first(where: { $0.value == selectedHeading })?.key {
+            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        }
         if let selected { selectTask(selected, reveal: false) }
         if let selectedProject { selectProject(selectedProject, reveal: false) }
         view.layoutSubtreeIfNeeded()
@@ -694,8 +735,7 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
             if let editor = inlineEditor, editor.draft.id == todo.id { return editor }
             let cell = TaskRowView()
             cell.configure(todo, textSize: store.preferences.textSize) { [weak self] in
-                guard let self, self.finishInlineEditing() else { return }
-                self.store.toggle(todo.id)
+                self?.toggleTaskWithFeedback(todo.id)
             }
             return cell
         }
@@ -843,7 +883,12 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
         return nil
     }
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
-        guard inlineEditor == nil else { return nil }
+        guard inlineEditor == nil, editingTitleField == nil else { return nil }
+        if let headingID = headingRows[row], case .project = route {
+            let item = NSPasteboardItem()
+            item.setString(headingID.uuidString, forType: headingDragType)
+            return item
+        }
         let id: UUID
         if let todo = task(at: row), todo.deletedAt == nil, todo.status == .open { id = todo.id }
         else if route == .today, let project = project(at: row), project.deletedAt == nil,
@@ -851,7 +896,48 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
         else { return nil }
         let item = NSPasteboardItem(); item.setString(id.uuidString, forType: dragType); return item
     }
+    func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession,
+                   willBeginAt screenPoint: NSPoint, forRowIndexes rowIndexes: IndexSet) {
+        guard rowIndexes.count == 1, let row = rowIndexes.first, headingRows[row] != nil,
+              case .heading = rows[row] else { return }
+        tableView.draggingDestinationFeedbackStyle = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? .regular : .gap
+        session.animatesToStartingPositionsOnCancelOrFail = true
+    }
+
+    func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession,
+                   endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        finishHeadingDrag()
+    }
+
+    /// 拖动结束/取消后移除占位，并等待 AppKit 清理源行后同步列表。
+    func finishHeadingDrag() {
+        let usedGap = table.draggingDestinationFeedbackStyle == .gap
+        table.headingDropBoundary = nil
+        table.draggingDestinationFeedbackStyle = .regular
+        // gap 的源行隐藏由 AppKit 在 delegate 返回后清理；下一轮再同步最终模型。
+        if usedGap {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.table.draggingDestinationFeedbackStyle == .regular else { return }
+                self.table.unhideRows(at: self.table.hiddenRowIndexes, withAnimation: [])
+                self.table.reloadData()
+            }
+        }
+    }
+
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation operation: NSTableView.DropOperation) -> NSDragOperation {
+        if let value = info.draggingPasteboard.string(forType: headingDragType), let id = UUID(uuidString: value) {
+            guard inlineEditor == nil, editingTitleField == nil, case .project = route,
+                  (info.draggingSource as? NSTableView) === table, headingRows.values.contains(id),
+                  row >= 0, row <= rows.count,
+                  !rows.prefix(row).contains(where: { if case .historyToggle = $0 { return true }; return false }) else { return [] }
+            // 落点对齐完整分组边界；在组内任务上悬停时提示下一分组之前。
+            let boundary = headingRows.keys.filter { $0 >= row }.min()
+                ?? rows.firstIndex(where: { if case .historyToggle = $0 { return true }; return false }) ?? rows.count
+            table.headingDropBoundary = boundary
+            tableView.setDropRow(boundary, dropOperation: .above)
+            return .move
+        }
+        table.headingDropBoundary = nil
         guard inlineEditor == nil, route != .trash, route != .logbook,
               let value = info.draggingPasteboard.string(forType: dragType), let id = UUID(uuidString: value) else { return [] }
         if store.todo(id) == nil {
@@ -861,9 +947,32 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
         tableView.setDropRow(row, dropOperation: .above); return .move
     }
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
+        if let value = info.draggingPasteboard.string(forType: headingDragType), let id = UUID(uuidString: value) {
+            guard (info.draggingSource as? NSTableView) === table else { return false }
+            // 先退出原生 gap，再移动实际行，避免两套临时几何同时作用于源行。
+            // 成功落下也走清理；不依赖源会话结束回调的到达顺序。
+            finishHeadingDrag()
+            return acceptDraggedHeading(id, at: row)
+        }
         guard let value = info.draggingPasteboard.string(forType: dragType), let id = UUID(uuidString: value) else { return false }
         return acceptDraggedItem(id, at: row, fromLocalList: (info.draggingSource as? NSTableView) === table)
     }
+    /// 标题连同其下任务排序；仅接受当前项目的可见标题，历史区域不可放置。
+    func acceptDraggedHeading(_ id: UUID, at row: Int) -> Bool {
+        guard inlineEditor == nil, editingTitleField == nil, case .project(let projectID) = route,
+              headingRows.values.contains(id), row >= 0, row <= rows.count,
+              !rows.prefix(row).contains(where: { if case .historyToggle = $0 { return true }; return false }) else { return false }
+        let ordered = headingRows.keys.sorted().compactMap { headingRows[$0] }
+        let insertion = headingRows.keys.filter { $0 < row && headingRows[$0] != id }.count
+        var ids = ordered.filter { $0 != id }
+        ids.insert(id, at: insertion)
+        guard ids != ordered else { return true }
+        // Store 成功写入会同步通知 reload；失败时清除标记，避免影响后续普通刷新。
+        animatesHeadingReorder = true
+        defer { animatesHeadingReorder = false }
+        return store.applyHeadingOperation { try HeadingOperations.reorder(ids, in: projectID, snapshot: &$0) } != nil
+    }
+
     func acceptDraggedItem(_ id: UUID, at row: Int, fromLocalList: Bool) -> Bool {
         guard inlineEditor == nil, route != .trash, route != .logbook else { return false }
         if let historyIndex = rows.firstIndex(where: { if case .historyToggle = $0 { return true }; return false }), row > historyIndex { return false }
@@ -919,6 +1028,18 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
         if let destination, let index = ids.firstIndex(of: destination) { ids.insert(id, at: index) } else { ids.append(id) }
         store.reorder(ids); selectTask(id); return true
     }
+    /// 项目行的稳定身份用于纯排序动画；系统分组不参与此路径。
+    private var projectRowIDs: [String] {
+        rows.enumerated().map { index, row in
+            switch row {
+            case .heading: return "heading:" + (headingRows[index]?.uuidString ?? "system:\(index)")
+            case .task(let task): return "task:" + task.id.uuidString
+            case .project(let project): return "project:" + project.id.uuidString
+            case .historyToggle: return "history"
+            }
+        }
+    }
+
     private func rowID(_ row: Row) -> UUID? {
         switch row {
         case .task(let task): return task.id

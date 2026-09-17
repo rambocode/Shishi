@@ -5,6 +5,47 @@ import ShishiCore
 
 /// 侧栏区域与项目改名：双击直接在行内编辑，不再弹出编辑器窗口。
 final class SidebarRenameTests: XCTestCase {
+    func testSelectingProjectKeepsSidebarCellsAndUpdatesSelection() async throws {
+        try await MainActor.run {
+            _ = NSApplication.shared
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let projects = (0..<40).map { Project(title: "项目\($0)", order: Double($0)) }
+            let todos = (0..<1200).map { Todo(title: "任务\($0)", schedule: .anytime, projectID: projects[$0 % projects.count].id) }
+            let url = folder.appendingPathComponent("db.json")
+            try SnapshotFile(url: url).write(Snapshot(todos: todos, projects: projects))
+            let store = TaskStore(fileURL: url)
+            let sidebar = SidebarController(store: store)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 220, height: 800), styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentViewController = sidebar
+            window.setContentSize(NSSize(width: 220, height: 800))
+            defer { window.contentViewController = nil; window.close() }
+            sidebar.view.layoutSubtreeIfNeeded()
+            let table = try XCTUnwrap(allViews(sidebar.view).compactMap { $0 as? NSTableView }.first)
+            let before = try XCTUnwrap(table.view(atColumn: 0, row: 0, makeIfNecessary: true))
+            let start = ProcessInfo.processInfo.systemUptime
+            sidebar.select(.project(projects[0].id))
+            sidebar.view.layoutSubtreeIfNeeded()
+            print("项目切换侧栏耗时：\((ProcessInfo.processInfo.systemUptime - start) * 1000) ms")
+            XCTAssertTrue(table.view(atColumn: 0, row: 0, makeIfNecessary: true) === before, "仅切换选择时不能重建侧栏及重新计算全部计数")
+            XCTAssertEqual(table.selectedRow, 10)
+            sidebar.select(.project(UUID()))
+            XCTAssertEqual(table.selectedRow, -1, "侧栏没有的历史项目应清除选择")
+
+            let owner = MainWindowController(store: store, dataURL: url)
+            defer { owner.window?.close() }
+            let navigationStart = ProcessInfo.processInfo.systemUptime
+            for project in projects.prefix(10) {
+                owner.navigate(.project(project.id))
+                owner.window?.contentView?.layoutSubtreeIfNeeded()
+                XCTAssertEqual(owner.list.route, .project(project.id))
+                XCTAssertEqual(owner.list.numberOfRows(in: owner.list.table), 30)
+            }
+            print("完整项目切换平均耗时：\((ProcessInfo.processInfo.systemUptime - navigationStart) * 1000 / 10) ms")
+        }
+    }
+
     @MainActor private func allViews(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(allViews) }
 
     /// 取表格自己持有的那份 cell，改名操作与断言必须落在同一个控件上。

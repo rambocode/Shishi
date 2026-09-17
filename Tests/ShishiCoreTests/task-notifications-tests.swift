@@ -43,6 +43,22 @@ final class TaskNotificationsTests: XCTestCase {
         return (TaskStore(fileURL: folder.appendingPathComponent("db.json")), folder)
     }
 
+    @MainActor func testUnbundledStartupKeepsReminderWithoutUsingSystemNotificationCenter() async throws {
+        // XCTest 与 swift run 都不在 .app 包内；默认 provider 必须安全降级，不能触发 ObjC 异常。
+        XCTAssertNotEqual(Bundle.main.bundleURL.pathExtension, "app")
+        let (store, folder) = makeStore(); defer { try? FileManager.default.removeItem(at: folder) }
+        let saved = Todo(title: "命令行开发提醒", reminderDate: time.addingTimeInterval(100))
+        XCTAssertTrue(store.save(saved))
+        let service = TaskNotifications(store: store, now: { self.time })
+        service.start()
+        await service.waitForRefresh()
+        XCTAssertTrue(service.scheduledIdentifiers.isEmpty)
+        XCTAssertTrue(try XCTUnwrap(service.lastError).contains(".app"))
+        let message = await service.authorizeAndRefresh()
+        XCTAssertTrue(try XCTUnwrap(message).contains(".app"))
+        XCTAssertEqual(store.todo(saved.id)?.reminderDate, saved.reminderDate)
+    }
+
     func testLegacyCodableAndInvalidReminder() throws {
         let legacy = Todo(title: "旧 Things", source: SourceInfo(provider: "Things", identifier: "old", metadata: ["reminder": "true"]))
         let data = try JSONEncoder().encode(legacy)

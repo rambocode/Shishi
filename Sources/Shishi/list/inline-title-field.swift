@@ -7,6 +7,8 @@ import AppKit
     static let saveDelay: TimeInterval = 0.6
     /// 为 false 时双击无效（例如已完成或已删除的项目）。
     var isRenameEnabled = false
+    /// 分组标题非编辑态的单击由表格处理，以保留行选择与原生拖动。
+    var forwardsSelectionToTable = false
     /// 保存标题；返回 false 表示写入失败。空标题不会调用。
     var onSave: ((String) -> Bool)?
     /// 进入与退出编辑时通知宿主，宿主据此暂停会重建视图的刷新。
@@ -32,6 +34,13 @@ import AppKit
 
     override func mouseDown(with event: NSEvent) {
         if isRenameEnabled, !isEditingTitle, event.clickCount == 2 { beginEditing(); return }
+        if forwardsSelectionToTable, !isEditingTitle {
+            var ancestor = superview
+            while let view = ancestor {
+                if let table = view as? NSTableView { table.mouseDown(with: event); return }
+                ancestor = view.superview
+            }
+        }
         super.mouseDown(with: event)
     }
 

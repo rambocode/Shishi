@@ -1,0 +1,1 @@
+self-review；swift build 与 git diff --check 通过。真实原生 AppKit 窗口、独立合成数据、浅色2x截图：rounds/round-02/toolbar.png。轮廓和深灰色已核对参考图。本轮未重复完整测试（仅图标描画和颜色调整）；上一轮218项测试通过、1跳过。未提交、未安装。

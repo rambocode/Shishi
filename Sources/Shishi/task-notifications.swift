@@ -10,6 +10,7 @@ struct TaskNotificationRequest: Equatable {
 }
 
 @MainActor protocol TaskNotificationProvider: AnyObject {
+    var unavailabilityReason: String? { get }
     func installDelegate()
     func authorizationStatus() async -> UNAuthorizationStatus
     func requestAuthorization() async throws -> Bool
@@ -18,20 +19,46 @@ struct TaskNotificationRequest: Equatable {
     func addRequest(_ request: TaskNotificationRequest) async throws
 }
 
+extension TaskNotificationProvider {
+    var unavailabilityReason: String? { nil }
+}
+
 @MainActor final class SystemTaskNotificationProvider: NSObject, TaskNotificationProvider, UNUserNotificationCenterDelegate {
-    private let center: UNUserNotificationCenter
-    init(center: UNUserNotificationCenter = .current()) { self.center = center }
-    func installDelegate() { center.delegate = self }
-    func authorizationStatus() async -> UNAuthorizationStatus { await center.notificationSettings().authorizationStatus }
-    func requestAuthorization() async throws -> Bool { try await center.requestAuthorization(options: [.alert, .sound]) }
+    private let center: UNUserNotificationCenter?
+    var unavailabilityReason: String? {
+        center == nil ? "提醒已保存，但当前未通过应用包运行，无法发送系统通知。请打包并启动拾事.app。" : nil
+    }
+
+    init(center: UNUserNotificationCenter? = nil) {
+        // swift run / XCTest 没有应用包身份，调用 current() 会抛出 Swift 无法捕获的 ObjC 异常。
+        // 必须在获取中心之前检查；正式 .app 包继续使用系统通知。
+        if let center { self.center = center }
+        else if Bundle.main.bundleURL.pathExtension == "app", Bundle.main.bundleIdentifier?.isEmpty == false {
+            self.center = .current()
+        } else { self.center = nil }
+    }
+    func installDelegate() { center?.delegate = self }
+    func authorizationStatus() async -> UNAuthorizationStatus {
+        guard let center else { return .notDetermined }
+        return await center.notificationSettings().authorizationStatus
+    }
+    func requestAuthorization() async throws -> Bool {
+        guard let center else { throw unavailableError() }
+        return try await center.requestAuthorization(options: [.alert, .sound])
+    }
+    private func unavailableError() -> NSError {
+        NSError(domain: "ShishiNotifications", code: 1, userInfo: [NSLocalizedDescriptionKey: unavailabilityReason ?? "系统通知不可用。"])
+    }
     func pendingRequests() async -> [TaskNotificationRequest] {
-        await center.pendingNotificationRequests().map {
+        guard let center else { return [] }
+        return await center.pendingNotificationRequests().map {
             TaskNotificationRequest(identifier: $0.identifier, title: $0.content.title,
                                     date: ($0.trigger as? UNCalendarNotificationTrigger)?.nextTriggerDate() ?? .distantPast)
         }
     }
-    func removeRequests(_ identifiers: [String]) { center.removePendingNotificationRequests(withIdentifiers: identifiers) }
+    func removeRequests(_ identifiers: [String]) { center?.removePendingNotificationRequests(withIdentifiers: identifiers) }
     func addRequest(_ request: TaskNotificationRequest) async throws {
+        guard let center else { throw unavailableError() }
         let content = UNMutableNotificationContent()
         content.title = request.title; content.sound = .default
         var calendar = Calendar(identifier: .gregorian)
@@ -99,6 +126,9 @@ struct TaskNotificationRequest: Equatable {
     /// nil 表示授权和本轮所有有效提醒协调成功；非 nil 供 UI 展示（包括容量不足）。
     /// 拒绝或系统错误不回滚本地提醒；重复提交合并权限请求。
     func authorizeAndRefresh() async -> String? {
+        if let reason = provider.unavailabilityReason {
+            lastError = reason; publish(); return reason
+        }
         if let authorizationTask { return await authorizationTask.value }
         let task = Task { [self] () -> String? in
             let status = await provider.authorizationStatus()
@@ -152,7 +182,7 @@ struct TaskNotificationRequest: Equatable {
         let desiredByID = Dictionary(uniqueKeysWithValues: desired.map { ($0.identifier, $0) })
         provider.removeRequests(owned.filter { desiredByID[$0.identifier] != $0 }.map(\.identifier))
         scheduledIdentifiers = Set(owned.filter { desiredByID[$0.identifier] == $0 }.map(\.identifier))
-        lastError = allowed ? nil : (tasks.isEmpty ? nil : "提醒已保存，但通知权限未获允许。请在系统设置中允许拾事通知。")
+        lastError = allowed ? nil : (tasks.isEmpty ? nil : (provider.unavailabilityReason ?? "提醒已保存，但通知权限未获允许。请在系统设置中允许拾事通知。"))
         if allowed && tasks.count > capacity {
             let localOnly = tasks.dropFirst(capacity).map(\.title).joined(separator: "、")
             lastError = "系统待发通知容量不足，以下 \(tasks.count - capacity) 个任务的提醒仅保存在本地，尚未调度：\(localOnly)。"

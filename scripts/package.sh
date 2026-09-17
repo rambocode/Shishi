@@ -12,6 +12,10 @@ binary_dir="$(swift build --configuration "$configuration" --show-bin-path)"
 app_path="$project_root/build/拾事.app"
 mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources"
 cp "$binary_dir/Shishi" "$app_path/Contents/MacOS/Shishi"
+# 正式应用去除调试符号；debug 包保留符号用于排查。
+if [[ "$configuration" == release ]]; then
+  xcrun strip -S "$app_path/Contents/MacOS/Shishi"
+fi
 cp resources/Info.plist "$app_path/Contents/Info.plist"
 cp resources/help.html "$app_path/Contents/Resources/help.html"
 # 编译品牌强调色（#1D60C4），让按钮、复选框等系统控件也使用同一蓝色；只有命令行工具时跳过。

@@ -154,6 +154,11 @@ final class SidebarController: NSViewController, NSTableViewDataSource, NSTableV
             for tag in store.allTags { rows.append(.init(route: .tag(tag), title: tag, symbol: "tag")) }
         }
         table.reloadData()
+        synchronizeSelection()
+    }
+
+    /// 路由切换只更新选择；计数、进度和行内容由数据及偏好变化触发 reload。
+    private func synchronizeSelection() {
         if let row = rows.firstIndex(where: { $0.route == route }) {
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         } else {
@@ -162,7 +167,7 @@ final class SidebarController: NSViewController, NSTableViewDataSource, NSTableV
         }
     }
     func select(_ newRoute: Route) {
-        route = newRoute; reload()
+        route = newRoute; synchronizeSelection()
         if table.selectedRow >= 0 { table.scrollRowToVisible(table.selectedRow) }
     }
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation operation: NSTableView.DropOperation) -> NSDragOperation {
