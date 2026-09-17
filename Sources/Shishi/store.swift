@@ -14,6 +14,8 @@ import ShishiCore
     private var protectedFile = false
     private var past: [Snapshot] = []
     private var future: [Snapshot] = []
+    /// 仅供界面短暂停留，不写入快照或撤销记录。
+    var projectCompletionFeedback: [UUID: DispatchWorkItem] = [:]
     let preferences: GeneralPreferences
     private var preferencesObserver: NSObjectProtocol?
     var todos: [Todo] { snapshot.todos }
@@ -47,7 +49,7 @@ import ShishiCore
         }
         refreshArchiveTiming()
     }
-    deinit { if let preferencesObserver { NotificationCenter.default.removeObserver(preferencesObserver) } }
+    deinit { for work in projectCompletionFeedback.values { work.cancel() }; if let preferencesObserver { NotificationCenter.default.removeObserver(preferencesObserver) } }
 
     /// 设置或跨日清理与手动归档均是可撤销的磁盘事务，写入失败保留 pending。
     @discardableResult func archiveCompletedItems() -> Bool {
@@ -97,6 +99,11 @@ import ShishiCore
             try file.write(value)
             if record { past.append(snapshot); if past.count > 100 { past.removeFirst() }; future.removeAll() }
             snapshot = value; errorMessage = nil
+            for id in Array(projectCompletionFeedback.keys) {
+                if !value.projects.contains(where: { $0.id == id && $0.deletedAt == nil && $0.status == .completed }) {
+                    projectCompletionFeedback.removeValue(forKey: id)?.cancel()
+                }
+            }
             NotificationCenter.default.post(name: Self.changed, object: self)
             return true
         } catch { errorMessage = error.localizedDescription; return false }
@@ -187,6 +194,14 @@ import ShishiCore
         if project.completed == completed && (project.status == nil || project.status == (completed ? .completed : .open)) { return true }
         project.completed = completed; project.status = completed ? .completed : .open
         return saveProject(project)
+    }
+    /// 项目与剩余任务一次保存、一次撤销；写入失败保留完整原状态。
+    @discardableResult func finishProject(_ id: UUID, status: TaskStatus) -> Bool {
+        var value = snapshot
+        do {
+            guard try ProjectOperations.finish(id, status: status, in: &value) else { return false }
+            return commit(value)
+        } catch { errorMessage = error.localizedDescription; return false }
     }
     @discardableResult func saveArea(_ area: Area) -> Bool {
         var value = snapshot; var item = area

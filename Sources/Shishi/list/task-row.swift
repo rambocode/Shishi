@@ -60,7 +60,12 @@ final class TaskRowView: NSTableCellView {
         badges.stringValue = parts.joined(separator: "  ")
         toolTip = ([todo.title, todo.notes] + todo.tags).filter { !$0.isEmpty }.joined(separator: "\n")
     }
-    @objc private func toggle() { onToggle?() }
+    @objc private func toggle() {
+        // NSButton 已切换 state；先绘制反馈，避免同步持久化和观察者刷新阻塞勾号显示。
+        check.needsDisplay = true
+        check.displayIfNeeded()
+        onToggle?()
+    }
 }
 
 final class ListTableView: NSTableView {

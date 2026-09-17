@@ -27,6 +27,52 @@ final class SidebarRegressionTests: XCTestCase {
         return try XCTUnwrap(icons.first)
     }
 
+    func testSelectionStaysEmphasizedAndDisclosurePreservesOtherCells() async throws {
+        try await MainActor.run {
+            _ = NSApplication.shared
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let area = Area(title: "折叠回归区域")
+            let key = "collapsedAreas"
+            let previous = UserDefaults.standard.object(forKey: key)
+            UserDefaults.standard.set([], forKey: key)
+            defer { UserDefaults.standard.set(previous, forKey: key) }
+            let project = Project(title: "子项目", areaID: area.id)
+            let url = folder.appendingPathComponent("db.json")
+            let projects = [project] + (1..<40).map { Project(title: "区域项目\($0)", areaID: area.id, order: Double($0)) }
+            let tasks = (0..<1200).map { Todo(title: "任务\($0)", projectID: projects[$0 % projects.count].id) }
+            try SnapshotFile(url: url).write(Snapshot(todos: tasks, projects: projects, areas: [area]))
+            let sidebar = SidebarController(store: TaskStore(fileURL: url))
+            let table = try table(in: sidebar)
+            let rowView = try XCTUnwrap(sidebar.tableView(table, rowViewForRow: 0))
+            rowView.isSelected = true
+            rowView.isEmphasized = false
+            XCTAssertTrue(rowView.isEmphasized, "焦点转到右侧时导航选择仍保持品牌色")
+            let firstCell = try XCTUnwrap(table.view(atColumn: 0, row: 0, makeIfNecessary: true))
+            let areaRow = try XCTUnwrap(try cells(in: sidebar).firstIndex { $0.textField?.stringValue == area.title })
+            let areaCell = try XCTUnwrap(table.view(atColumn: 0, row: areaRow, makeIfNecessary: true))
+            let button = try XCTUnwrap(allViews(areaCell).compactMap { $0 as? NSButton }.first)
+            sidebar.select(.project(project.id))
+            var callbacks: [Route] = []
+            sidebar.onSelect = { callbacks.append($0) }
+            let expandedCount = table.numberOfRows
+            let start = ProcessInfo.processInfo.systemUptime
+            for _ in 0..<3 {
+                button.performClick(nil)
+                XCTAssertEqual(table.numberOfRows, expandedCount - projects.count)
+                XCTAssertEqual(table.selectedRow, -1)
+                XCTAssertEqual(sidebar.route, .project(project.id))
+                XCTAssertTrue(table.view(atColumn: 0, row: 0, makeIfNecessary: true) === firstCell)
+                button.performClick(nil)
+                XCTAssertEqual(table.numberOfRows, expandedCount)
+                XCTAssertEqual(table.selectedRow, areaRow + 1)
+                XCTAssertTrue(table.view(atColumn: 0, row: 0, makeIfNecessary: true) === firstCell)
+            }
+            print("40 个项目、1200 个任务的展开/收缩平均耗时：\((ProcessInfo.processInfo.systemUptime - start) * 1000 / 6) ms")
+            XCTAssertTrue(callbacks.isEmpty, "折叠操作不能意外触发内容导航")
+        }
+    }
+
     func testSidebarProgressMatchesSummaryAndDetailAtZeroPartialAndFull() async throws {
         try await MainActor.run {
             _ = NSApplication.shared

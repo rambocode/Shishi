@@ -31,6 +31,28 @@ final class CompletionFeedbackTests: XCTestCase {
         check.performClick(nil)
     }
 
+    func testCheckboxDrawsBeforeSynchronousCompletionHandler() async throws {
+        try await MainActor.run {
+            _ = NSApplication.shared
+            let row = TaskRowView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
+            let window = NSWindow(contentRect: row.frame, styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = row
+            defer { window.close() }
+            var called = false
+            let check = try XCTUnwrap(descendants(row).compactMap { $0 as? NSButton }.first)
+            row.configure(Todo(title: "立即完成")) {
+                called = true
+                XCTAssertEqual(check.state, .on)
+                XCTAssertFalse(check.needsDisplay, "保存及同步通知执行前必须已绘制勾选反馈")
+            }
+            row.layoutSubtreeIfNeeded()
+            check.needsDisplay = true
+            check.performClick(nil)
+            XCTAssertTrue(called)
+        }
+    }
+
     func testFailedSaveRestoresOpenCheckbox() async throws {
         try await MainActor.run {
             let (list, store, folder, _, tasks) = try fixture()

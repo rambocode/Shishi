@@ -8,6 +8,9 @@ private struct SidebarEntry {
     var color: NSColor = .secondaryLabelColor
     var indent: CGFloat = 0
     var spacer: Bool = false
+    var project: Project?
+    var summary: ProjectSummary?
+    var count: Int = 0
 }
 
 private final class AreaDisclosureButton: NSButton {
@@ -28,6 +31,11 @@ private final class SidebarRowView: NSTableRowView {
     // source list 样式的选中由系统材质绘制、不会调用 drawSelection；固定为 regular 才能自绘品牌蓝。
     override var selectionHighlightStyle: NSTableView.SelectionHighlightStyle {
         get { .regular }
+        set { }
+    }
+    // 导航选择表示当前内容位置，不能随右侧字段编辑器获得焦点而变灰。
+    override var isEmphasized: Bool {
+        get { true }
         set { }
     }
     override func drawSelection(in dirtyRect: NSRect) {
@@ -56,6 +64,9 @@ final class SidebarController: NSViewController, NSTableViewDataSource, NSTableV
     /// 正在行内改名的区域或项目；改名期间禁止重建行，否则输入会被打断。
     private var editingRoute: Route?
     private var pendingReload = false
+    private var updatingRows = false
+    /// 数据刷新时准备全部项目行，展开区域时不再查询、排序任务。
+    private var projectRowsByArea: [UUID: [SidebarEntry]] = [:]
 
     init(store: TaskStore) {
         self.store = store
@@ -136,24 +147,45 @@ final class SidebarController: NSViewController, NSTableViewDataSource, NSTableV
             .init(route: .trash, title: "废纸篓", symbol: "trash.fill")
         ]
         let projects = store.projects.filter {
-            ((!$0.completed && ($0.status == nil || $0.status == .open)) || $0.pendingArchiveDate != nil) && $0.deletedAt == nil
+            ((!$0.completed && ($0.status == nil || $0.status == .open)) || $0.pendingArchiveDate != nil || store.projectCompletionFeedback[$0.id] != nil) && $0.deletedAt == nil
         }.sorted { $0.order < $1.order }
-        for project in projects where project.areaID == nil {
+        var tasksByProject: [UUID: [Todo]] = [:]
+        for task in store.todos {
+            if let projectID = task.projectID { tasksByProject[projectID, default: []].append(task) }
+        }
+        let projectEntries = projects.map { project in
+            SidebarEntry(route: .project(project.id), title: project.title, symbol: "circle",
+                         indent: project.areaID == nil ? 0 : 8, project: project,
+                         summary: ProjectSummary(project: project, tasks: tasksByProject[project.id] ?? []),
+                         count: store.items(for: .project(project.id)).count)
+        }
+        projectRowsByArea = [:]
+        for entry in projectEntries {
+            if let areaID = entry.project?.areaID { projectRowsByArea[areaID, default: []].append(entry) }
+        }
+        for entry in projectEntries where entry.project?.areaID == nil {
             if rows.last?.route == .trash { rows.append(.init(route: nil, title: "", spacer: true)) }
-            rows.append(.init(route: .project(project.id), title: project.title, symbol: "circle"))
+            rows.append(entry)
         }
         for area in store.areas.sorted(by: { $0.order < $1.order }) {
             rows.append(.init(route: nil, title: "", spacer: true))
             rows.append(.init(route: .area(area.id), title: area.title, symbol: "square.stack.3d.up"))
-            for project in projects where project.areaID == area.id && !collapsedAreas.contains(area.id.uuidString) {
-                rows.append(.init(route: .project(project.id), title: project.title, symbol: "circle", indent: 8))
+            if !collapsedAreas.contains(area.id.uuidString) {
+                rows.append(contentsOf: projectRowsByArea[area.id] ?? [])
             }
         }
         if !store.allTags.isEmpty {
             rows.append(.init(route: nil, title: "", spacer: true))
             for tag in store.allTags { rows.append(.init(route: .tag(tag), title: tag, symbol: "tag")) }
         }
+        for index in rows.indices where rows[index].project == nil {
+            if let route = rows[index].route {
+                rows[index].count = store.items(for: route).count + store.projectItems(for: route).count
+            }
+        }
+        updatingRows = true
         table.reloadData()
+        updatingRows = false
         synchronizeSelection()
     }
 
@@ -189,7 +221,7 @@ final class SidebarController: NSViewController, NSTableViewDataSource, NSTableV
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { rows[row].spacer ? 19 : max(29, CGFloat(store.preferences.textSize) + 15) }
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { rows[row].route != nil }
     func tableViewSelectionDidChange(_ notification: Notification) {
-        guard rows.indices.contains(table.selectedRow), let selected = rows[table.selectedRow].route, selected != route else { return }
+        guard !updatingRows, rows.indices.contains(table.selectedRow), let selected = rows[table.selectedRow].route, selected != route else { return }
         route = selected; onSelect?(selected)
     }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -197,9 +229,9 @@ final class SidebarController: NSViewController, NSTableViewDataSource, NSTableV
         let cell = NSTableCellView()
         guard !entry.spacer else { return cell }
         let icon: NSView
-        if case .project(let id) = entry.route, let project = store.projects.first(where: { $0.id == id }) {
+        if let project = entry.project, let summary = entry.summary {
             let progress = ProjectProgressView()
-            progress.configure(project: project, summary: ProjectSummary(project: project, tasks: store.todos))
+            progress.configure(project: project, summary: summary)
             icon = progress
         } else {
             let image = NSImageView()
@@ -208,10 +240,7 @@ final class SidebarController: NSViewController, NSTableViewDataSource, NSTableV
             icon = image
         }
         let label = Appearance.label(entry.title, size: CGFloat(store.preferences.textSize))
-        let count = entry.route.map { route -> Int in
-            if case .project = route { return store.items(for: route).count }
-            return store.items(for: route).count + store.projectItems(for: route).count
-        } ?? 0
+        let count = entry.count
         let badge = Appearance.label(count > 0 ? String(count) : "", size: 11)
         badge.textColor = .tertiaryLabelColor
         [icon, label, badge].forEach { cell.addSubview($0); $0.translatesAutoresizingMaskIntoConstraints = false }
@@ -243,10 +272,29 @@ final class SidebarController: NSViewController, NSTableViewDataSource, NSTableV
         return cell
     }
     @objc private func toggleArea(_ sender: AreaDisclosureButton) {
-        guard let id = sender.areaID?.uuidString else { return }
-        if collapsedAreas.contains(id) { collapsedAreas.remove(id) } else { collapsedAreas.insert(id) }
+        guard let areaID = sender.areaID, editingRoute == nil,
+              let areaRow = rows.firstIndex(where: { $0.route == .area(areaID) }) else { return }
+        let id = areaID.uuidString
+        let wasCollapsed = collapsedAreas.contains(id)
+        let children = projectRowsByArea[areaID] ?? []
+        let indexes = IndexSet(integersIn: (areaRow + 1)..<(areaRow + 1 + children.count))
+        // 行号变动产生的临时选择通知不能触发右侧导航。
+        updatingRows = true
+        if wasCollapsed {
+            collapsedAreas.remove(id)
+            rows.insert(contentsOf: children, at: areaRow + 1)
+            table.insertRows(at: indexes, withAnimation: [])
+        } else {
+            collapsedAreas.insert(id)
+            rows.removeSubrange((areaRow + 1)..<(areaRow + 1 + children.count))
+            table.removeRows(at: indexes, withAnimation: [])
+        }
+        synchronizeSelection()
+        updatingRows = false
+        sender.image = Appearance.symbol(wasCollapsed ? "chevron.down" : "chevron.right",
+                                         description: wasCollapsed ? "折叠区域" : "展开区域")
+        sender.setAccessibilityLabel((wasCollapsed ? "折叠区域：" : "展开区域：") + rows[areaRow].title)
         UserDefaults.standard.set(Array(collapsedAreas).sorted(), forKey: "collapsedAreas")
-        reload()
     }
     @objc private func showNewList(_ sender: NSButton) {
         let menu = NSMenu()

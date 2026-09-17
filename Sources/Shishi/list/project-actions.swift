@@ -17,12 +17,74 @@ final class ProjectActionsController: NSObject {
     private weak var anchor: NSView?
     private var popover: NSPopover?
     private var sharingPicker: NSSharingServicePicker?
+    private var pendingCompletions = Set<UUID>()
+    private let scheduleCompletion: (@escaping () -> Void) -> Void
 
-    init(store: TaskStore) { self.store = store; super.init() }
+    init(store: TaskStore, scheduleCompletion: @escaping (@escaping () -> Void) -> Void = {
+        DispatchQueue.main.async(execute: $0)
+    }) {
+        self.store = store
+        self.scheduleCompletion = scheduleCompletion
+        super.init()
+    }
 
     func show(projectID: UUID, from view: NSView) {
         anchor = view
         buildMenu(projectID: projectID).popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.maxY), in: view)
+    }
+
+    /// 入口共享最新快照；弹窗打开期间不写盘，选择后再读取项目和剩余任务。
+    func toggleCompletion(projectID: UUID, from view: NSView?) {
+        guard let value = editable(projectID) else { return }
+        if let view { anchor = view }
+        if isClosed(value) {
+            if store.setProjectCompleted(projectID, completed: false) { onChanged?() } else { showError() }
+            return
+        }
+        let count = ProjectSummary(project: value, tasks: store.todos).openCount
+        if count == 0 { finish(projectID, status: .completed); return }
+        guard anchor?.window != nil else { return }
+        guard let editor = completionPrompt(projectID: projectID, from: view) else { return }
+        present(editor)
+    }
+
+    /// 构造与真实入口相同的确认界面；取消不保存，提交时使用最新任务树而非弹窗旧副本。
+    func completionPrompt(projectID: UUID, from view: NSView? = nil) -> ProjectCompletionController? {
+        if let view { anchor = view }
+        guard let value = editable(projectID), !isClosed(value) else { return nil }
+        let count = ProjectSummary(project: value, tasks: store.todos).openCount
+        guard count > 0 else { return nil }
+        let editor = ProjectCompletionController(openCount: count)
+        editor.onChoice = { [weak self] status in
+            guard let self else { return }
+            // 确认后立即移除弹窗，避免关闭动画与同步保存争用主线程。
+            popover?.animates = false
+            popover?.close()
+            if let status { finish(projectID, status: status) }
+        }
+        return editor
+    }
+
+    private func finish(_ id: UUID, status: TaskStatus) {
+        guard let value = editable(id), !isClosed(value), !pendingCompletions.contains(id) else { return }
+        let progress = anchor as? ProjectProgressView
+        if status == .completed { progress?.showCompletionCheckmark() }
+        let needsDeferredSave = anchor?.window != nil
+        pendingCompletions.insert(id)
+        let save = { [self, weak progress] in
+            defer { pendingCompletions.remove(id) }
+            // 提交时重新校验，不能用弹窗打开时的旧快照覆盖后续改动。
+            guard let current = editable(id), !isClosed(current) else { return }
+            if store.finishProjectWithFeedback(id, status: status) { onChanged?() }
+            else {
+                if let current = editable(id), let progress, progress.projectID == id {
+                    progress.configure(project: current, summary: ProjectSummary(project: current, tasks: store.todos))
+                }
+                showError()
+            }
+        }
+        // 先让按钮事件结束、关闭窗口及勾号呈现，再执行持久化和同步观察者刷新。
+        if needsDeferredSave { scheduleCompletion(save) } else { save() }
     }
 
     /// 无有效项目时返回空菜单；废纸篓项目禁用修改及分享，恢复由既有废纸篓负责。
@@ -30,11 +92,8 @@ final class ProjectActionsController: NSObject {
         let menu = NSMenu(); menu.autoenablesItems = false
         guard let project = project(projectID) else { return menu }
         let enabled = project.deletedAt == nil
-        add(isClosed(project) ? "重新打开项目" : "完成项目", icon: "checkmark.circle", to: menu, enabled: enabled) { [self] in
-            update(projectID) { value in
-                let reopen = isClosed(value)
-                value.completed = !reopen; value.status = reopen ? .open : .completed
-            }
+        add(isClosed(project) ? "重新打开项目" : "完成项目", icon: "checkmark.circle", to: menu, enabled: enabled, deferPresentation: anchor != nil) { [self] in
+            toggleCompletion(projectID: projectID, from: anchor)
         }
         add("时间", icon: "calendar", to: menu, enabled: enabled, deferPresentation: true) { [self] in
             if let anchor { showDate(projectID: projectID, from: anchor) }

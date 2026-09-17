@@ -190,6 +190,10 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
         primary.target = self; primary.action = #selector(primaryAction)
         projectButton.bezelStyle = .inline
         projectButton.target = self; projectButton.action = #selector(editProject)
+        projectProgress.onActivate = { [weak self] in
+            guard let self, finishInlineEditing(), case .project(let id) = route else { return }
+            projectActions.toggleCompletion(projectID: id, from: projectProgress)
+        }
         projectMore.target = self; projectMore.action = #selector(showProjectMenu(_:))
         addHeadingButton.bezelStyle = .inline; addHeadingButton.target = self; addHeadingButton.action = #selector(addHeadingAction(_:))
         addHeadingButton.setAccessibilityLabel("在项目中新建标题分组")
@@ -356,7 +360,8 @@ final class TaskListController: NSViewController, NSTableViewDataSource, NSTable
         let selectedHeading = headingRows[table.selectedRow]
         let scrollOrigin = contentScroll.contentView.bounds.origin
         let completionRows: [(index: Int, task: Todo)] = rows.enumerated().compactMap { index, row in
-            guard case .task(let old) = row, completionFeedback[old.id] != nil,
+            guard case .task(let old) = row,
+                  completionFeedback[old.id] != nil || (old.projectID.map { store.projectCompletionFeedback[$0] != nil } == true),
                   let task = store.todo(old.id), task.status == .completed,
                   Domain.deletionDate(task, in: store.snapshot) == nil else { return nil }
             return (index, task)

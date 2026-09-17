@@ -1,8 +1,19 @@
 import AppKit
+import QuartzCore
 import ShishiCore
 
-/// 非交互的项目完成进度图像；外部通过 frame 或约束选择 16 / 28pt 等尺寸。
-final class ProjectProgressView: NSView {
+/// 共享项目进度图标；提供 onActivate 时作为可通过键盘和辅助功能操作的完成按钮。
+final class ProjectProgressView: NSButton {
+    var onActivate: (() -> Void)? {
+        didSet {
+            setAccessibilityRole(onActivate == nil ? .image : .button)
+            toolTip = onActivate == nil ? nil : "完成或重新打开项目"
+        }
+    }
+
+    private(set) var projectID: UUID?
+    private(set) var showsCheckmark = false
+
     var fraction: Double = 0 {
         didSet { needsDisplay = true }
     }
@@ -12,6 +23,10 @@ final class ProjectProgressView: NSView {
 
     override init(frame: NSRect = .zero) {
         super.init(frame: frame)
+        title = ""
+        isBordered = false
+        target = self
+        action = #selector(activate)
         setAccessibilityElement(true)
         setAccessibilityRole(.image)
         setAccessibilityLabel(summaryText)
@@ -23,12 +38,27 @@ final class ProjectProgressView: NSView {
 
     /// 侧栏、项目页和智能列表统一使用同一状态与统计口径。
     func configure(project: Project, summary: ProjectSummary) {
+        projectID = project.id
         let completed = (project.completed || project.status == .completed) && project.status != .canceled
+        showsCheckmark = completed
+        isEnabled = project.deletedAt == nil
         fraction = completed ? 1 : summary.fraction
-        summaryText = completed ? "项目已完成" : "项目进度：已完成 \(summary.completedCount) / \(summary.openCount + summary.completedCount)"
+        if project.status == .canceled { summaryText = "项目已取消" }
+        else { summaryText = completed ? "项目已完成" : "项目进度：已完成 \(summary.completedCount) / \(summary.openCount + summary.completedCount)" }
     }
 
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    /// 点击完成的即时视觉反馈，不扫描任务；实际保存失败由控制器恢复快照状态。
+    func showCompletionCheckmark() {
+        showsCheckmark = true
+        fraction = 1
+        summaryText = "项目已完成"
+        displayIfNeeded()
+        window?.displayIfNeeded()
+        CATransaction.flush()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { onActivate == nil ? nil : super.hitTest(point) }
+    @objc private func activate() { onActivate?() }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
@@ -36,7 +66,6 @@ final class ProjectProgressView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
         let diameter = min(bounds.width, bounds.height)
         guard diameter > 0 else { return }
         let center = NSPoint(x: bounds.midX, y: bounds.midY)
@@ -51,6 +80,22 @@ final class ProjectProgressView: NSView {
         let ring = NSBezierPath(ovalIn: outer)
         ring.lineWidth = ringWidth
         ring.stroke()
+
+        if showsCheckmark {
+            // 项目完成与“任务全部完成但项目尚未关闭”使用不同图形。
+            let tick = NSBezierPath()
+            tick.move(to: NSPoint(x: center.x - diameter * 0.23, y: center.y))
+            tick.line(to: NSPoint(x: center.x - diameter * 0.05,
+                                 y: center.y + diameter * (isFlipped ? 0.17 : -0.17)))
+            tick.line(to: NSPoint(x: center.x + diameter * 0.24,
+                                 y: center.y + diameter * (isFlipped ? -0.20 : 0.20)))
+            Appearance.blue.setStroke()
+            tick.lineWidth = max(1.4, diameter / 12)
+            tick.lineCapStyle = .round
+            tick.lineJoinStyle = .round
+            tick.stroke()
+            return
+        }
 
         let progress = fraction.isNaN ? 0 : min(1, max(0, fraction))
         guard progress > 0 else { return }

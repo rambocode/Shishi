@@ -67,6 +67,30 @@ public enum ProjectOperations {
         return true
     }
 
+    /// 原子关闭项目及真实的开放子任务；保留既有历史、删除项和内部重复模板。
+    /// 仅允许 completed/canceled；失败抛错并保持输入快照不变，重复调用不生成重复后继。
+    @discardableResult public static func finish(_ id: UUID, status: TaskStatus, in snapshot: inout Snapshot,
+                                                now: Date = Date(), calendar: Calendar = .current) throws -> Bool {
+        guard status != .open else { throw DataError.invalid("关闭项目必须选择完成或取消") }
+        guard var project = snapshot.projects.first(where: { $0.id == id && $0.deletedAt == nil }) else { return false }
+        guard !project.completed && (project.status == nil || project.status == .open) else { return false }
+        guard now.timeIntervalSinceReferenceDate.isFinite else { throw DataError.invalid("完成日期无效") }
+        var candidate = snapshot
+        for index in candidate.todos.indices {
+            let task = candidate.todos[index]
+            if task.projectID == id && task.status == .open && Domain.deletionDate(task, in: snapshot) == nil
+                && task.source?.metadata["repeatTemplate"] != "true" {
+                candidate.todos[index].status = status
+                candidate.todos[index].completedAt = now
+            }
+        }
+        project.completed = true
+        project.status = status
+        try save(project, in: &candidate, now: now, calendar: calendar)
+        snapshot = candidate
+        return true
+    }
+
     /// 手动副本保留任务历史及安排，仅复制未删除的真实子项；内部重复模板不复制，所有来源和重复关联清空。
     @discardableResult public static func duplicate(_ id: UUID, in snapshot: inout Snapshot) throws -> UUID? {
         try Domain.validate(snapshot)
